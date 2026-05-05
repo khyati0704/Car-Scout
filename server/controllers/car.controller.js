@@ -2,6 +2,19 @@ const Car = require("../models/Car");
 const { cloudinary } = require("../config/cloudinary");
 
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const coerceCarPayload = (body) => ({
+  ...body,
+  price: body.price !== undefined ? Number(body.price) : body.price,
+  mileage: body.mileage !== undefined ? Number(body.mileage) : body.mileage,
+  year: body.year !== undefined ? Number(body.year) : body.year,
+  features:
+    typeof body.features === "string"
+      ? JSON.parse(body.features)
+      : Array.isArray(body.features)
+        ? body.features
+        : [],
+  registrationNumber: body.registrationNumber?.trim().toUpperCase(),
+});
 
 // @route  GET /api/cars
 // @access Public
@@ -100,21 +113,14 @@ const getCarById = async (req, res) => {
 // @route  POST /api/cars
 // @access Private (sellers)
 const createCar = async (req, res) => {
- 
   try {
-     console.log("BODY:", req.body);
-console.log("FILES:", req.files);
-   const images = req.files && req.files.length > 0
-  ? req.files.map((f) => f.path)
-  : [];
+    const images = req.files && req.files.length > 0
+      ? req.files.map((f) => f.path)
+      : [];
     const carData = {
-      ...req.body,
+      ...coerceCarPayload(req.body),
       seller: req.user._id,
       images,
-      features: req.body.features ? JSON.parse(req.body.features) : [],
-      price: Number(req.body.price),
-      mileage: Number(req.body.mileage),
-      year: Number(req.body.year),
     };
 
     const car = await Car.create(carData);
@@ -144,7 +150,7 @@ const updateCar = async (req, res) => {
       req.body.images = [...(car.images || []), ...req.files.map((f) => f.path)];
     }
 
-    const updated = await Car.findByIdAndUpdate(req.params.id, req.body, {
+    const updated = await Car.findByIdAndUpdate(req.params.id, coerceCarPayload(req.body), {
       new: true,
       runValidators: true,
     }).populate("seller", "name avatar city");

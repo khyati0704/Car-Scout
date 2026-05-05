@@ -21,8 +21,8 @@ export default function ListCar() {
   const [form, setForm] = useState({
     make: "", model: "", year: new Date().getFullYear(), price: "",
     mileage: "", fuelType: "petrol", transmission: "manual",
-    condition: "good", bodyType: "sedan", color: "", city: "",
-    state: "", negotiable: true, description: "", features: [],
+    condition: "good", bodyType: "sedan", registrationNumber: "",
+    color: "", city: "", state: "", negotiable: true, description: "", features: [],
   });
 
   // Load existing car data if editing
@@ -32,7 +32,8 @@ export default function ListCar() {
         const c = res.data.car;
         setForm({ make: c.make, model: c.model, year: c.year, price: c.price,
           mileage: c.mileage, fuelType: c.fuelType, transmission: c.transmission,
-          condition: c.condition, bodyType: c.bodyType || "sedan", color: c.color || "",
+          condition: c.condition, bodyType: c.bodyType || "sedan", registrationNumber: c.registrationNumber || "",
+          color: c.color || "",
           city: c.city || "", state: c.state || "", negotiable: c.negotiable,
           description: c.description || "", features: c.features || [] });
         setImagePreviews(c.images || []);
@@ -144,6 +145,8 @@ export default function ListCar() {
                 <select value={form.bodyType} onChange={(e) => set("bodyType", e.target.value)} style={styles.input}>
                   {["sedan","suv","hatchback","coupe","convertible","pickup","van","wagon"].map((b) => <option key={b} value={b}>{b.charAt(0).toUpperCase()+b.slice(1)}</option>)}
                 </select></div>
+              <div style={styles.field}><label style={styles.label}>Registration number</label>
+                <input value={form.registrationNumber} onChange={(e) => set("registrationNumber", e.target.value.toUpperCase())} placeholder="e.g. GJ05AB1234" style={styles.input} /></div>
               <div style={styles.field}><label style={styles.label}>Color</label>
                 <input value={form.color} onChange={(e) => set("color", e.target.value)} placeholder="e.g. Pearl White" style={styles.input} /></div>
               <div style={styles.field}><label style={styles.label}>City</label>
@@ -237,6 +240,10 @@ export default function ListCar() {
                     <span style={styles.previewVal}>{v}</span>
                   </div>
                 ))}
+                <div style={styles.previewSpec}>
+                  <span style={styles.previewKey}>Plate</span>
+                  <span style={styles.previewVal}>{form.registrationNumber || "-"}</span>
+                </div>
               </div>
               {imagePreviews.length > 0 && (
                 <img src={imagePreviews[0]} alt="Main" style={{ width: "100%", height: 220, objectFit: "cover", borderRadius: 10, marginTop: 16 }} />

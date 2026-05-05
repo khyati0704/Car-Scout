@@ -8,12 +8,17 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// ✅ FIX: params must be a FUNCTION in latest version
 const storage = new CloudinaryStorage({
   cloudinary,
-  params: {
-    folder: "car-scout",
-    allowed_formats: ["jpg", "jpeg", "png", "webp"],
-    transformation: [{ width: 1200, height: 800, crop: "limit", quality: "auto" }],
+  params: async (req, file) => {
+    return {
+      folder: "car-scout",
+      allowed_formats: ["jpg", "jpeg", "png", "webp"],
+      transformation: [
+        { width: 1200, height: 800, crop: "limit", quality: "auto" },
+      ],
+    };
   },
 });
 

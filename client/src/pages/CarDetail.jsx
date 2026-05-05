@@ -5,6 +5,7 @@ import InspectionReport from "../components/InspectionReport";
 import { carService } from "../services/carService";
 import { chatService } from "../services/chatService";
 import api from "../services/api";
+import { loadRazorpayCheckout, paymentService } from "../services/paymentService";
 import { testDriveService } from "../services/testDriveService";
 import { notifyError, notifyInfo, notifySuccess } from "../utils/toastBus";
 import {
@@ -30,6 +31,12 @@ const getDefaultScheduleValue = () => {
   return toDateTimeInputValue(next);
 };
 
+const formatDealDate = (value) =>
+  new Date(value).toLocaleString("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
 export default function CarDetail() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -42,6 +49,7 @@ export default function CarDetail() {
   const [contacting, setContacting] = useState(false);
   const [tab, setTab] = useState("details");
   const [downPayment, setDownPayment] = useState(0);
+const [paymentAmount, setPaymentAmount] = useState(25000);
   const [loanYears, setLoanYears] = useState(5);
   const [testDriveForm, setTestDriveForm] = useState({
     scheduledFor: getDefaultScheduleValue(),
@@ -50,6 +58,9 @@ export default function CarDetail() {
   });
   const [scheduling, setScheduling] = useState(false);
   const [scheduleFeedback, setScheduleFeedback] = useState("");
+  const [paying, setPaying] = useState(false);
+  const [paymentFeedback, setPaymentFeedback] = useState("");
+  const [inspectionGenerating, setInspectionGenerating] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -58,6 +69,7 @@ export default function CarDetail() {
         const nextCar = response.data.car;
         setCar(nextCar);
         setDownPayment(Math.round(Number(nextCar.price || 0) * 0.2));
+      setPaymentAmount(25000);
         setTestDriveForm((current) => ({
           ...current,
           location: [nextCar.city, nextCar.state].filter(Boolean).join(", ") || "Seller location",
@@ -145,6 +157,163 @@ export default function CarDetail() {
     }
   };
 
+  const handleGenerateInspection = async () => {
+    if (!user) {
+      notifyInfo("Please sign in to generate the inspection.");
+      return navigate("/login");
+    }
+
+    if (!isSeller) {
+      notifyInfo("Only the seller can generate an AI inspection from this page.");
+      return;
+    }
+
+    setInspectionGenerating(true);
+    try {
+      const response = await api.post("/inspections/generate", {
+        carId: car._id,
+        sellerNotes: car.description || "",
+        vin: car.registrationNumber || "",
+        accidentHistory: car.accidentHistory ? "true" : "false",
+        serviceHistory: car.serviceHistory ? "true" : "false",
+        numberOfOwners: car.numberOfOwners || 1,
+      });
+
+      if (response.data?.inspection) {
+        setInspection(response.data.inspection);
+        setTab("inspection");
+        notifySuccess("AI inspection generated successfully.");
+      }
+    } catch (error) {
+      notifyError(error.response?.data?.error || "Could not generate the AI inspection right now.");
+    } finally {
+      setInspectionGenerating(false);
+    }
+  };
+
+  const handlePayNow = async () => {
+    if (!user) {
+      notifyInfo("Please sign in to complete the purchase.");
+      return navigate("/login");
+    }
+
+    if (!car?.available) {
+      const message = "This car is no longer available for booking confirmation.";
+      setPaymentFeedback(message);
+      notifyInfo(message);
+      return;
+    }
+
+    const selectedPaymentAmount = Math.round(Number(paymentAmount));
+    if (!canConfirmBooking) {
+      const message = "This listing does not support the fixed confirmation amounts yet.";
+      setPaymentFeedback(message);
+      notifyError(message);
+      return;
+    }
+    if (!confirmationAmounts.includes(selectedPaymentAmount)) {
+  const message = "Invalid confirmation amount selected.";
+  setPaymentFeedback(message);
+  notifyError(message);
+  return;
+}
+
+    setPaying(true);
+    setPaymentFeedback("");
+
+    try {
+      const scriptReady = await loadRazorpayCheckout();
+      if (!scriptReady || !window.Razorpay) {
+        throw new Error("Razorpay checkout could not be loaded.");
+      }
+
+      const response = await paymentService.createCheckoutOrder(car._id, {
+        amount: selectedPaymentAmount,
+      });
+
+      const { order, purchase, keyId } = response.data;
+      let verificationStarted = false;
+
+      const razorpay = new window.Razorpay({
+        key: keyId,
+        amount: order.amount,
+        currency: order.currency,
+        name: "Car Scout",
+        description: `Booking confirmation for ${car.year} ${car.make} ${car.model}`,
+        order_id: order.id,
+        prefill: {
+          name: user.name,
+          email: user.email,
+          contact: user.phone || "",
+        },
+        notes: {
+          receiptNumber: purchase.receiptNumber,
+          sellerName: car.seller.name,
+          vehicle: `${car.year} ${car.make} ${car.model}`,
+          place: [car.city, car.state].filter(Boolean).join(", "),
+          confirmationAmount: selectedPaymentAmount.toString(),
+          balanceDue: Math.max(0, Number(car.price || 0) - selectedPaymentAmount).toString(),
+        },
+        theme: { color: "#22c55e" },
+        modal: {
+          ondismiss: () => {
+            if (!verificationStarted) {
+              setPaymentFeedback("Confirmation window closed before completion.");
+              setPaying(false);
+            }
+          },
+        },
+        handler: async (gatewayResponse) => {
+          verificationStarted = true;
+          setPaymentFeedback("Verifying your booking confirmation and preparing the receipt...");
+
+          try {
+            const verifyResponse = await paymentService.verifyCheckoutPayment({
+              purchaseId: purchase._id,
+              ...gatewayResponse,
+            });
+            const completedPurchase = verifyResponse.data.purchase;
+
+            setCar((current) =>
+              current
+                ? {
+                    ...current,
+                    available: false,
+                    soldAt: completedPurchase.paidAt,
+                    soldPrice: completedPurchase.totalAmount || completedPurchase.amount,
+                  }
+                : current
+            );
+
+            notifySuccess("Payment verified and receipt generated.");
+            navigate(`/purchases/${completedPurchase._id}`);
+          } catch (error) {
+            const message = error.response?.data?.error || "Confirmation verification failed.";
+            setPaymentFeedback(message);
+            notifyError(message);
+          } finally {
+            setPaying(false);
+          }
+        },
+      });
+
+      razorpay.on("payment.failed", (event) => {
+        const message = event.error?.description || "Confirmation failed before completion.";
+        setPaymentFeedback(message);
+        notifyError(message);
+        setPaying(false);
+      });
+
+      setPaymentFeedback("Secure Razorpay checkout opened. Confirm the booking to generate your receipt and balance record.");
+      razorpay.open();
+    } catch (error) {
+      const message = error.response?.data?.error || error.message || "Could not start the checkout.";
+      setPaymentFeedback(message);
+      notifyError(message);
+      setPaying(false);
+    }
+  };
+
   const finance = useMemo(() => {
     if (!car) return getFinanceSnapshot(0);
     return {
@@ -161,7 +330,10 @@ export default function CarDetail() {
   const condition = conditionInfo(car.condition);
   const priceBand = getPriceBand(car);
   const isSeller = user?._id === car.seller._id;
-
+  const isAvailable = car.available !== false;
+const confirmationAmounts = [25000].filter((amount) => amount <= Number(car.price || 0));
+  const canConfirmBooking = confirmationAmounts.length > 0;
+const selectedConfirmationAmount = paymentAmount;
   const specs = [
     ["Year", car.year],
     ["Mileage", formatMileage(car.mileage)],
@@ -169,6 +341,7 @@ export default function CarDetail() {
     ["Transmission", car.transmission?.toUpperCase() || "-"],
     ["Body type", car.bodyType || "-"],
     ["Color", car.color || "-"],
+    ["Plate no.", car.registrationNumber || "Pending upload"],
     ["Condition", condition.label],
     ["Location", [car.city, car.state].filter(Boolean).join(", ") || "-"],
     ["Views", car.views || 0],
@@ -266,15 +439,12 @@ export default function CarDetail() {
 
             {tab === "inspection" && (
               <section style={styles.block}>
-                {inspection ? (
-                  <InspectionReport inspection={inspection} />
-                ) : (
-                  <div style={styles.emptyBlock}>
-                    <h3 style={styles.blockTitle}>Inspection report not available yet</h3>
-                    <p style={styles.emptyText}>The listing is live, but the AI condition summary has not been generated or attached yet.</p>
-                    {isSeller && <Link to="/dashboard" style={styles.primaryLink}>Manage this listing</Link>}
-                  </div>
-                )}
+                <InspectionReport
+                  inspection={inspection}
+                  isSeller={isSeller}
+                  onGenerate={handleGenerateInspection}
+                  generating={inspectionGenerating}
+                />
               </section>
             )}
 
@@ -289,6 +459,7 @@ export default function CarDetail() {
                   <div>
                     <h3 style={styles.blockTitle}>{car.seller.name}</h3>
                     <p style={styles.sellerMeta}>{car.seller.city || "Location not shared"}</p>
+                    <p style={styles.sellerMeta}>{car.seller.phone || "Phone shared after purchase"}</p>
                     <p style={styles.sellerMeta}>Member since {new Date(car.seller.createdAt).getFullYear()}</p>
                     {car.seller.isVerified && <span style={styles.verified}>Verified seller</span>}
                   </div>
@@ -304,6 +475,7 @@ export default function CarDetail() {
               <h1 style={styles.heading}>{car.year} {car.make} {car.model}</h1>
               <p style={styles.meta}>{formatMileage(car.mileage)} · {car.fuelType} · {car.transmission?.toUpperCase() || "-"}</p>
               <div style={styles.marketChip}>{priceBand.label}</div>
+              {!isAvailable && <div style={styles.soldChip}>Booked and receipt issued</div>}
 
               <div style={styles.divider} />
 
@@ -353,72 +525,163 @@ export default function CarDetail() {
               <div style={styles.divider} />
 
               {isSeller ? (
-                <Link to={`/list-car?edit=${car._id}`} style={styles.primaryLink}>Edit listing</Link>
+                isAvailable ? (
+                  <Link to={`/list-car?edit=${car._id}`} style={styles.primaryLink}>Edit listing</Link>
+                ) : (
+                    <div style={styles.soldSellerCard}>
+                      <div style={styles.panelLabel}>Deal status</div>
+                      <div style={styles.scheduleTitle}>This listing is locked because the booking confirmation is complete.</div>
+                      <div style={styles.sellerMeta}>
+                        Booked on {car.soldAt ? formatDealDate(car.soldAt) : "the recorded deal date"} for {formatPrice(car.soldPrice || car.price)}.
+                      </div>
+                      <Link to="/payments" style={styles.secondaryLink}>View payments hub</Link>
+                    </div>
+                )
               ) : (
-                <div style={styles.contactArea}>
-                  <textarea value={msgText} onChange={(event) => setMsgText(event.target.value)} rows={4} style={styles.textarea} />
-                  <button onClick={handleContact} disabled={contacting || !msgText.trim()} style={{ ...styles.primaryButton, opacity: contacting || !msgText.trim() ? 0.55 : 1 }}>
-                    {contacting ? "Sending..." : "Contact seller"}
-                  </button>
-                  <button
-                    onClick={() => setMsgText(`Hi, I want to schedule a test drive for the ${car.year} ${car.make} ${car.model}. What time works for you?`)}
-                    style={styles.secondaryButton}
-                  >
-                    Prepare test-drive message
-                  </button>
-                  <button onClick={handleSave} style={styles.secondaryButton}>Save this car</button>
+                isAvailable ? (
+                  <div style={styles.contactArea}>
+                    <textarea value={msgText} onChange={(event) => setMsgText(event.target.value)} rows={4} style={styles.textarea} />
+                    <button onClick={handleContact} disabled={contacting || !msgText.trim()} style={{ ...styles.primaryButton, opacity: contacting || !msgText.trim() ? 0.55 : 1 }}>
+                      {contacting ? "Sending..." : "Contact seller"}
+                    </button>
+                    <button
+                      onClick={() => setMsgText(`Hi, I want to schedule a test drive for the ${car.year} ${car.make} ${car.model}. What time works for you?`)}
+                      style={styles.secondaryButton}
+                    >
+                      Prepare test-drive message
+                    </button>
+                    <button onClick={handleSave} style={styles.secondaryButton}>Save this car</button>
 
-                  <div style={styles.scheduleCard}>
+                    <div style={styles.scheduleCard}>
+                      <div style={styles.scheduleHeader}>
+                        <div>
+                          <div style={styles.panelLabel}>Test drive</div>
+                          <div style={styles.scheduleTitle}>Request a visit directly from this listing</div>
+                        </div>
+                      </div>
+
+                      <label style={styles.formField}>
+                        <span style={styles.formLabel}>Preferred date and time</span>
+                        <input
+                          type="datetime-local"
+                          value={testDriveForm.scheduledFor}
+                          onChange={(event) => setTestDriveForm((current) => ({ ...current, scheduledFor: event.target.value }))}
+                          style={styles.formInput}
+                        />
+                      </label>
+
+                      <label style={styles.formField}>
+                        <span style={styles.formLabel}>Meeting location</span>
+                        <input
+                          type="text"
+                          value={testDriveForm.location}
+                          onChange={(event) => setTestDriveForm((current) => ({ ...current, location: event.target.value }))}
+                          style={styles.formInput}
+                        />
+                      </label>
+
+                      <label style={styles.formField}>
+                        <span style={styles.formLabel}>Notes</span>
+                        <textarea
+                          rows={3}
+                          value={testDriveForm.notes}
+                          onChange={(event) => setTestDriveForm((current) => ({ ...current, notes: event.target.value }))}
+                          style={styles.formInput}
+                        />
+                      </label>
+
+                      <button
+                        onClick={handleScheduleTestDrive}
+                        disabled={scheduling || !testDriveForm.scheduledFor || !testDriveForm.location.trim()}
+                        style={{ ...styles.primaryButton, opacity: scheduling || !testDriveForm.scheduledFor || !testDriveForm.location.trim() ? 0.55 : 1 }}
+                      >
+                        {scheduling ? "Requesting..." : "Request test drive"}
+                      </button>
+
+                      {scheduleFeedback && (
+                        <div style={styles.scheduleFeedback}>{scheduleFeedback}</div>
+                      )}
+                    </div>
+
+                    <div id="checkout" style={styles.purchaseCard}>
                     <div style={styles.scheduleHeader}>
                       <div>
-                        <div style={styles.panelLabel}>Test drive</div>
-                        <div style={styles.scheduleTitle}>Request a visit directly from this listing</div>
+                        <div style={styles.panelLabel}>Confirm your booking</div>
+                        <div style={styles.scheduleTitle}>Pay a fixed Rs. 25,000 confirmation amount to confirm this car instantly.</div>
                       </div>
                     </div>
 
-                    <label style={styles.formField}>
-                      <span style={styles.formLabel}>Preferred date and time</span>
-                      <input
-                        type="datetime-local"
-                        value={testDriveForm.scheduledFor}
-                        onChange={(event) => setTestDriveForm((current) => ({ ...current, scheduledFor: event.target.value }))}
-                        style={styles.formInput}
+                    <div style={styles.purchaseMetaGrid}>
+                      <FinanceStat label="Total price" value={formatPrice(car.price)} />
+                      <FinanceStat
+                        label="Confirm now"
+                        value={canConfirmBooking ? formatPrice(selectedConfirmationAmount) : "N/A"}
                       />
-                    </label>
+                      <FinanceStat
+                        label="Balance due"
+                        value={
+                          canConfirmBooking
+                            ? formatPrice(Math.max(0, Number(car.price || 0) - Number(selectedConfirmationAmount || 0)))
+                            : formatPrice(car.price)
+                        }
+                      />
+                        <FinanceStat label="Plate no." value={car.registrationNumber || "Pending upload"} />
+                        <FinanceStat label="Seller contact" value={car.seller.phone || "Shared on receipt"} />
+                        <FinanceStat label="Place" value={[car.city, car.state].filter(Boolean).join(", ") || "Seller location"} />
+                      </div>
 
-                    <label style={styles.formField}>
-                      <span style={styles.formLabel}>Meeting location</span>
-                      <input
-                        type="text"
-                        value={testDriveForm.location}
-                        onChange={(event) => setTestDriveForm((current) => ({ ...current, location: event.target.value }))}
-                        style={styles.formInput}
-                      />
-                    </label>
+                    <div style={styles.paymentChoice}>
+                      <div style={styles.formLabel}>Select confirmation amount</div>
+                      <div style={styles.confirmAmountRow}>
+                        {confirmationAmounts.map((amount) => (
+  <button
+    key={amount}
+    onClick={() => setPaymentAmount(amount)}
+    style={
+      paymentAmount === amount
+        ? styles.confirmAmountBtnActive
+        : styles.confirmAmountBtn
+    }
+  >
+    {formatPrice(amount)}
+  </button>
+))}
+                      </div>
+                      {!canConfirmBooking && (
+                        <div style={styles.paymentFeedback}>
+                          This listing is below the fixed confirmation amount. Please contact the seller directly.
+                        </div>
+                      )}
+                    </div>
 
-                    <label style={styles.formField}>
-                      <span style={styles.formLabel}>Notes</span>
-                      <textarea
-                        rows={3}
-                        value={testDriveForm.notes}
-                        onChange={(event) => setTestDriveForm((current) => ({ ...current, notes: event.target.value }))}
-                        style={styles.formInput}
-                      />
-                    </label>
+                    <p style={styles.purchaseNote}>
+                      This is a fixed confirmation amount, not the full car price. The receipt will include the car name,
+                      number plate, model, seller name, seller contact, place, confirmation amount, balance due, payment date, and the
+                      post-confirmation handover checklist.
+                    </p>
 
                     <button
-                      onClick={handleScheduleTestDrive}
-                      disabled={scheduling || !testDriveForm.scheduledFor || !testDriveForm.location.trim()}
-                      style={{ ...styles.primaryButton, opacity: scheduling || !testDriveForm.scheduledFor || !testDriveForm.location.trim() ? 0.55 : 1 }}
+                      onClick={handlePayNow}
+                      disabled={paying || !canConfirmBooking}
+                      style={{ ...styles.primaryButton, opacity: paying || !canConfirmBooking ? 0.55 : 1 }}
                     >
-                      {scheduling ? "Requesting..." : "Request test drive"}
+                        {paying ? "Preparing checkout..." : "Confirm booking with Razorpay"}
                     </button>
 
-                    {scheduleFeedback && (
-                      <div style={styles.scheduleFeedback}>{scheduleFeedback}</div>
-                    )}
+                      {paymentFeedback && <div style={styles.paymentFeedback}>{paymentFeedback}</div>}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div style={styles.soldBuyerCard}>
+                    <div style={styles.panelLabel}>Deal closed</div>
+                    <div style={styles.scheduleTitle}>This car has already been booked by another buyer.</div>
+                    <div style={styles.sellerMeta}>Browse the latest available cars or check your dashboard if this was your completed booking.</div>
+                    <div style={styles.footerLinks}>
+                      <Link to="/payments" style={styles.secondaryLink}>Open payments hub</Link>
+                      <Link to="/cars" style={styles.secondaryLink}>Browse other cars</Link>
+                    </div>
+                  </div>
+                )
               )}
             </div>
           </aside>
@@ -483,6 +746,7 @@ const styles = {
   heading: { margin: "12px 0 8px", fontFamily: "'Syne', sans-serif", fontSize: 28, color: "#f8fafc", lineHeight: 1.1 },
   meta: { margin: 0, color: "#94a3b8", lineHeight: 1.7 },
   marketChip: { display: "inline-flex", marginTop: 14, background: "rgba(148,163,184,0.12)", borderRadius: 999, padding: "8px 12px", color: "#e2e8f0", fontSize: 13, fontWeight: 700 },
+  soldChip: { display: "inline-flex", marginTop: 12, background: "rgba(239,68,68,0.14)", color: "#fca5a5", borderRadius: 999, padding: "8px 12px", fontSize: 12, fontWeight: 800 },
   divider: { height: 1, background: "rgba(148,163,184,0.14)", margin: "20px 0" },
   financeHeader: { display: "flex", justifyContent: "space-between", gap: 12, alignItems: "start", marginBottom: 18 },
   panelLabel: { color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.16em", marginBottom: 6 },
@@ -506,6 +770,17 @@ const styles = {
   primaryLink: { display: "inline-block", background: "#22c55e", color: "#052e16", textDecoration: "none", borderRadius: 14, padding: "12px 16px", fontWeight: 800 },
   secondaryLink: { display: "inline-block", textDecoration: "none", color: "#e2e8f0", border: "1px solid rgba(148,163,184,0.18)", borderRadius: 14, padding: "12px 16px" },
   scheduleCard: { marginTop: 8, background: "rgba(2,6,23,0.45)", border: "1px solid rgba(148,163,184,0.14)", borderRadius: 18, padding: 16 },
+  purchaseCard: { marginTop: 8, background: "linear-gradient(180deg, rgba(34,197,94,0.12), rgba(2,6,23,0.45))", border: "1px solid rgba(34,197,94,0.22)", borderRadius: 18, padding: 16, scrollMarginTop: 90 },
+  purchaseMetaGrid: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginBottom: 14 },
+  paymentChoice: { margin: "8px 0 12px" },
+  confirmAmountRow: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 },
+  confirmAmountBtn: { background: "rgba(15,23,42,0.84)", border: "1px solid rgba(148,163,184,0.18)", color: "#e2e8f0", borderRadius: 12, padding: "9px 12px", cursor: "pointer" },
+  confirmAmountBtnActive: { background: "rgba(34,197,94,0.16)", color: "#86efac", borderColor: "rgba(34,197,94,0.32)" },
+  purchaseNote: { color: "#cbd5e1", lineHeight: 1.7, fontSize: 13, margin: "0 0 14px" },
+  paymentFeedback: { color: "#bbf7d0", fontSize: 13, lineHeight: 1.6, marginTop: 10 },
+  soldSellerCard: { display: "flex", flexDirection: "column", gap: 10, padding: 18, borderRadius: 18, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.18)" },
+  soldBuyerCard: { display: "flex", flexDirection: "column", gap: 12, padding: 18, borderRadius: 18, background: "rgba(148,163,184,0.08)", border: "1px solid rgba(148,163,184,0.18)" },
+  footerLinks: { display: "flex", gap: 10, flexWrap: "wrap" },
   scheduleHeader: { marginBottom: 14 },
   scheduleTitle: { color: "#f8fafc", fontWeight: 700, lineHeight: 1.5 },
   formField: { display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 },

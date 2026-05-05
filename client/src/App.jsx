@@ -12,6 +12,8 @@ import Dashboard from "./pages/Dashboard";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Profile from "./pages/Profile";
+import PaymentsPage from "./pages/PaymentsPage";
+import PurchaseReceipt from "./pages/PurchaseReceipt";
 
 // Route guard for authenticated pages
 const PrivateRoute = ({ children }) => {
@@ -44,6 +46,8 @@ const AppRoutes = () => (
       <Route path="/messages" element={<PrivateRoute><Messages /></PrivateRoute>} />
       <Route path="/messages/:conversationId" element={<PrivateRoute><Messages /></PrivateRoute>} />
       <Route path="/dashboard" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
+      <Route path="/payments" element={<PrivateRoute><PaymentsPage /></PrivateRoute>} />
+      <Route path="/purchases/:purchaseId" element={<PrivateRoute><PurchaseReceipt /></PrivateRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   </>

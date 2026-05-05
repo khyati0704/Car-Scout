@@ -29,6 +29,9 @@ export default function Navbar() {
           {user && (
             <Link to="/messages" style={{ ...styles.link, ...(isActive("/messages") ? styles.linkActive : {}) }}>Messages</Link>
           )}
+          {user && (
+            <Link to="/payments" style={{ ...styles.link, ...(isActive("/payments") ? styles.linkActive : {}) }}>Payments</Link>
+          )}
         </div>
 
         {/* Auth area */}

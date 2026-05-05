@@ -2,8 +2,39 @@
 
 const severityColor = { minor: "#fbbf24", moderate: "#f97316", major: "#ef4444" };
 
-export default function InspectionReport({ inspection }) {
-  if (!inspection) return null;
+export default function InspectionReport({ inspection, isSeller = false, onGenerate, generating = false }) {
+  const reportReady =
+    inspection?.status === "completed" &&
+    typeof inspection.aiSummary === "string" &&
+    inspection.aiSummary.trim().length > 0 &&
+    Number.isFinite(Number(inspection.conditionScore));
+
+  if (!reportReady) {
+    const statusLabel =
+      inspection?.status === "processing"
+        ? "Inspection is being generated"
+        : inspection?.status === "failed"
+          ? "Inspection generation failed"
+          : "Inspection report not available yet";
+    const statusText =
+      inspection?.status === "processing"
+        ? "The AI summary is still being prepared. Please check back in a moment."
+        : inspection?.status === "failed"
+          ? "The last inspection run failed. You can try generating it again."
+          : "The listing is live, but the AI condition summary has not been generated or attached yet.";
+
+    return (
+      <div style={styles.emptyWrap}>
+        <h3 style={styles.emptyTitle}>{statusLabel}</h3>
+        <p style={styles.emptyText}>{statusText}</p>
+        {isSeller && onGenerate && (
+          <button onClick={onGenerate} disabled={generating} style={styles.emptyButton}>
+            {generating ? "Generating..." : "Generate AI inspection"}
+          </button>
+        )}
+      </div>
+    );
+  }
 
   const { conditionScore, aiSummary, issues, strengths, estimatedValue, recommendation } = inspection;
   const recommendationColor = { buy: "#4ade80", consider: "#fbbf24", avoid: "#ef4444" };
@@ -81,6 +112,10 @@ export default function InspectionReport({ inspection }) {
 
 const styles = {
   wrap: { background: "rgba(2,6,23,0.42)", border: "1px solid rgba(148,163,184,0.14)", borderRadius: 18, padding: 20 },
+  emptyWrap: { background: "rgba(2,6,23,0.42)", border: "1px solid rgba(148,163,184,0.14)", borderRadius: 18, padding: 20 },
+  emptyTitle: { margin: 0, color: "#f8fafc", fontFamily: "'Syne', sans-serif", fontSize: 22 },
+  emptyText: { margin: "10px 0 0", color: "#94a3b8", lineHeight: 1.7 },
+  emptyButton: { marginTop: 14, background: "#22c55e", color: "#052e16", border: "none", borderRadius: 14, padding: "12px 16px", fontWeight: 800, cursor: "pointer" },
   header: { display: "flex", gap: 18, alignItems: "start", justifyContent: "space-between", flexWrap: "wrap", paddingBottom: 18, borderBottom: "1px solid rgba(148,163,184,0.12)" },
   label: { color: "#94a3b8", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.14em", marginBottom: 6 },
   score: { fontFamily: "'Syne', sans-serif", fontSize: 40, lineHeight: 1 },

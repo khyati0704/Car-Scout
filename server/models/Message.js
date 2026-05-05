@@ -32,7 +32,7 @@ const messageSchema = new mongoose.Schema(
     content: { type: String, required: true, maxlength: 1000 },
     type: {
       type: String,
-      enum: ["text", "offer", "counter-offer", "accepted", "rejected", "test-drive"],
+      enum: ["text", "offer", "counter-offer", "accepted", "rejected", "test-drive", "payment", "handover"],
       default: "text",
     },
     offerAmount: { type: Number, default: null }, // used when type is offer/counter-offer

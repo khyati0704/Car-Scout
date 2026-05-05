@@ -31,6 +31,15 @@ const carSchema = new mongoose.Schema(
       type: String,
       enum: ["sedan", "suv", "hatchback", "coupe", "convertible", "pickup", "van", "wagon"],
     },
+    registrationNumber: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      validate: {
+        validator: (value) => !value || /^[A-Z]{2}[ -]?[0-9]{1,2}[ -]?[A-Z]{1,3}[ -]?[0-9]{4}$/.test(value),
+        message: "Invalid registration number format",
+      },
+    },
     color: { type: String, trim: true },
     description: { type: String, maxlength: 2000 },
     images: [{ type: String }], // Cloudinary URLs
@@ -38,6 +47,13 @@ const carSchema = new mongoose.Schema(
     city: { type: String, trim: true },
     state: { type: String, trim: true },
     available: { type: Boolean, default: true },
+    buyer: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    soldAt: { type: Date, default: null },
+    soldPrice: { type: Number, default: null, min: 0 },
     views: { type: Number, default: 0 },
     aiScore: { type: Number, min: 0, max: 10 }, // from AI inspection
     negotiable: { type: Boolean, default: true },
